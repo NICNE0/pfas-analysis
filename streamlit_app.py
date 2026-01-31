@@ -7,6 +7,7 @@ import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
+from pandas.api.types import is_list_like
 try:
     from PIL import Image
 except Exception:  # Pillow is optional; fall back to raw PNG
@@ -39,6 +40,27 @@ def format_value(value: float) -> str:
     if abs_val >= 1:
         return f"{rounded:.2f}"
     return f"{rounded:.3f}"
+
+
+def normalize_date_range(value, default_start, default_end):
+    if value is None:
+        return default_start, default_end
+    if is_list_like(value) and not isinstance(value, (str, bytes)):
+        values = [v for v in list(value) if v is not None]
+        if not values:
+            return default_start, default_end
+        if len(values) == 1:
+            start = end = pd.to_datetime(values[0])
+        else:
+            start = pd.to_datetime(values[0])
+            end = pd.to_datetime(values[1])
+    else:
+        start = end = pd.to_datetime(value)
+    if pd.isna(start) or pd.isna(end):
+        return default_start, default_end
+    if start > end:
+        start, end = end, start
+    return start, end
 
 
 def plot_location_chart(
@@ -211,7 +233,7 @@ def load_data(file_bytes: bytes) -> pd.DataFrame:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
     if "sample_date" in df.columns:
-        df["sample_date"] = pd.to_datetime(df["sample_date"], errors="coerce")
+        df["sample_date"] = pd.to_datetime(df["sample_date"], errors="coerce").dt.normalize()
 
     return df
 
@@ -247,6 +269,9 @@ with st.sidebar:
     st.header("Filters")
     min_value = st.number_input("Minimum Reporting Limit (MRL)", min_value=0.0, value=2.0, step=0.1)
 
+    st.header("Date Range (per location)")
+    date_range_container = st.container()
+
     st.header("Chart")
     bar_width = st.slider("Bar width", min_value=0.2, max_value=0.9, value=0.6, step=0.05)
 
@@ -258,11 +283,11 @@ if uploaded is None:
     st.stop()
 
 df = load_data(uploaded.getvalue())
-test_name = Path(uploaded.name).stem.replace("_", " ").strip()
 
 required_cols = {
     "sample_date",
     "location",
+    "category",
     "total",
     "PFHpA",
     "PFHxS",
@@ -276,7 +301,38 @@ if missing:
     st.error(f"Missing required columns: {missing}")
     st.stop()
 
-locations = sorted(df["location"].dropna().unique().tolist())
+df_valid = df[df["total"].notna()].copy()
+if df_valid.empty:
+    st.warning("No records with totals found after filtering.")
+    st.stop()
+
+categories = df_valid["category"].dropna().unique().tolist()
+if len(categories) == 1:
+    report_test_name = str(categories[0])
+elif len(categories) > 1:
+    report_test_name = "Multiple Categories"
+else:
+    report_test_name = "Unknown Category"
+
+locations = sorted(df_valid["location"].dropna().unique().tolist())
+
+location_date_ranges = {}
+with date_range_container:
+    for location in locations:
+        loc_df = df_valid[df_valid["location"] == location]
+        loc_min = loc_df["sample_date"].min()
+        loc_max = loc_df["sample_date"].max()
+        if pd.isna(loc_min) or pd.isna(loc_max):
+            loc_min = pd.Timestamp.today().normalize()
+            loc_max = loc_min
+        with st.expander(f"{location}", expanded=False):
+            date_range = st.date_input(
+                "Date range",
+                value=(loc_min.date(), loc_max.date()),
+                key=f"date_range_{location}",
+            )
+        start_date, end_date = normalize_date_range(date_range, loc_min, loc_max)
+        location_date_ranges[location] = (start_date, end_date)
 
 analyte_cols = [
     "PFHpA",
@@ -347,7 +403,17 @@ if (
 
 location_items = []
 for location in locations:
-    filtered = df[df["location"] == location].copy()
+    filtered = df_valid[df_valid["location"] == location].copy()
+    start_date, end_date = location_date_ranges.get(location, (None, None))
+    if start_date is not None and end_date is not None:
+        filtered = filtered[filtered["sample_date"].between(start_date, end_date)]
+    location_categories = filtered["category"].dropna().unique().tolist()
+    if len(location_categories) == 1:
+        location_test_name = str(location_categories[0])
+    elif len(location_categories) > 1:
+        location_test_name = "Multiple Categories"
+    else:
+        location_test_name = "Unknown Category"
 
     display_df = filtered.copy()
     if "lab_id" in display_df.columns:
@@ -361,10 +427,11 @@ for location in locations:
     )
     plot_df = plot_df.sort_values("sample_date")
 
-    title = f"{test_name}\n{location}"
+    title = f"{location_test_name}\n{location}"
     location_items.append(
         {
             "location": location,
+            "test_name": location_test_name,
             "display_df": display_df,
             "plot_df": plot_df,
             "title": title,
@@ -377,7 +444,7 @@ figure_number = 1
 for item in location_items:
     if item["plot_df"].empty:
         continue
-    item["caption"] = f"Figure 1-{figure_number}. {test_name} – {item['location']}"
+    item["caption"] = f"Figure 1-{figure_number}. {item['test_name']} – {item['location']}"
     item["fig"] = create_chart_figure(
         item["plot_df"],
         item["title"],
@@ -489,7 +556,7 @@ if report_items:
     sidebar_placeholder.download_button(
         "Download report (PDF)",
         pdf_bytes,
-        file_name=f"{test_name}_report.pdf",
+        file_name=f"{report_test_name}_report.pdf",
         mime="application/pdf",
     )
 
