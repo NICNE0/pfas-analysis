@@ -269,7 +269,7 @@ with st.sidebar:
     st.header("Filters")
     min_value = st.number_input("Minimum Reporting Limit (MRL)", min_value=0.0, value=2.0, step=0.1)
 
-    st.header("Date Range (per location)")
+    st.header("Date Range (by category)")
     date_range_container = st.container()
 
     st.header("Chart")
@@ -317,22 +317,32 @@ else:
 locations = sorted(df_valid["location"].dropna().unique().tolist())
 
 location_date_ranges = {}
+category_locations = (
+    df_valid.assign(category=df_valid["category"].fillna("Unknown Category"))
+    .groupby("category")["location"]
+    .unique()
+    .to_dict()
+)
 with date_range_container:
-    for location in locations:
-        loc_df = df_valid[df_valid["location"] == location]
-        loc_min = loc_df["sample_date"].min()
-        loc_max = loc_df["sample_date"].max()
-        if pd.isna(loc_min) or pd.isna(loc_max):
-            loc_min = pd.Timestamp.today().normalize()
-            loc_max = loc_min
-        with st.expander(f"{location}", expanded=False):
-            date_range = st.date_input(
-                "Date range",
-                value=(loc_min.date(), loc_max.date()),
-                key=f"date_range_{location}",
-            )
-        start_date, end_date = normalize_date_range(date_range, loc_min, loc_max)
-        location_date_ranges[location] = (start_date, end_date)
+    for category in sorted(category_locations.keys()):
+        with st.expander(f"{category}", expanded=False):
+            for location in sorted(category_locations.get(category, [])):
+                loc_df = df_valid[
+                    (df_valid["location"] == location)
+                    & (df_valid["category"].fillna("Unknown Category") == category)
+                ]
+                loc_min = loc_df["sample_date"].min()
+                loc_max = loc_df["sample_date"].max()
+                if pd.isna(loc_min) or pd.isna(loc_max):
+                    loc_min = pd.Timestamp.today().normalize()
+                    loc_max = loc_min
+                date_range = st.date_input(
+                    f"{location}",
+                    value=(loc_min.date(), loc_max.date()),
+                    key=f"date_range_{category}_{location}",
+                )
+                start_date, end_date = normalize_date_range(date_range, loc_min, loc_max)
+                location_date_ranges[(category, location)] = (start_date, end_date)
 
 analyte_cols = [
     "PFHpA",
@@ -404,9 +414,6 @@ if (
 location_items = []
 for location in locations:
     filtered = df_valid[df_valid["location"] == location].copy()
-    start_date, end_date = location_date_ranges.get(location, (None, None))
-    if start_date is not None and end_date is not None:
-        filtered = filtered[filtered["sample_date"].between(start_date, end_date)]
     location_categories = filtered["category"].dropna().unique().tolist()
     if len(location_categories) == 1:
         location_test_name = str(location_categories[0])
@@ -414,6 +421,10 @@ for location in locations:
         location_test_name = "Multiple Categories"
     else:
         location_test_name = "Unknown Category"
+    range_key = (location_test_name, location)
+    start_date, end_date = location_date_ranges.get(range_key, (None, None))
+    if start_date is not None and end_date is not None:
+        filtered = filtered[filtered["sample_date"].between(start_date, end_date)]
 
     display_df = filtered.copy()
     if "lab_id" in display_df.columns:
