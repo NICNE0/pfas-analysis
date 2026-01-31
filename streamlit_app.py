@@ -7,7 +7,6 @@ import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
-from matplotlib import font_manager as fm
 try:
     from PIL import Image
 except Exception:  # Pillow is optional; fall back to raw PNG
@@ -84,11 +83,23 @@ def plot_location_chart(
         ax.legend(title="", loc="upper left", frameon=False)
 
 
-def optimize_png_bytes(png_bytes: bytes, compression_level: int = 9) -> bytes:
+def optimize_png_bytes(
+    png_bytes: bytes,
+    compression_level: int = 9,
+    max_colors: int = 256,
+    quantize_threshold_bytes: int = 1_000_000,
+) -> bytes:
     if Image is None:
         return png_bytes
     try:
         img = Image.open(BytesIO(png_bytes))
+        if len(png_bytes) >= quantize_threshold_bytes:
+            img = img.convert("RGBA").convert(
+                "P",
+                palette=Image.ADAPTIVE,
+                colors=max_colors,
+                dither=Image.NONE,
+            )
         buf = BytesIO()
         img.save(buf, format="PNG", optimize=True, compress_level=compression_level)
         return buf.getvalue()
@@ -96,7 +107,21 @@ def optimize_png_bytes(png_bytes: bytes, compression_level: int = 9) -> bytes:
         return png_bytes
 
 
-def render_chart_png(
+def fig_to_image_bytes(fig, dpi: int, fmt: str, jpeg_quality: int) -> bytes:
+    buf = BytesIO()
+    if fmt.lower() in {"jpeg", "jpg"}:
+        fig.savefig(
+            buf,
+            format="jpeg",
+            dpi=dpi,
+            pil_kwargs={"quality": jpeg_quality, "optimize": True, "progressive": True},
+        )
+    else:
+        fig.savefig(buf, format="png", dpi=dpi)
+    return buf.getvalue()
+
+
+def create_chart_figure(
     plot_df,
     title,
     analyte_cols,
@@ -104,7 +129,6 @@ def render_chart_png(
     bar_width,
     fig_width_in,
     fig_height_in,
-    dpi=450,
 ):
     fig, ax = plt.subplots(figsize=(fig_width_in, fig_height_in))
     plot_location_chart(
@@ -117,10 +141,49 @@ def render_chart_png(
         legend_outside=True,
     )
     fig.tight_layout(pad=0.2)
+    return fig
+
+
+def render_chart_image(
+    plot_df,
+    title,
+    analyte_cols,
+    color_map,
+    bar_width,
+    fig_width_in,
+    fig_height_in,
+    dpi=300,
+    fmt="jpeg",
+    jpeg_quality=85,
+):
+    fig = create_chart_figure(
+        plot_df,
+        title,
+        analyte_cols,
+        color_map,
+        bar_width,
+        fig_width_in,
+        fig_height_in,
+    )
     buf = BytesIO()
-    fig.savefig(buf, format="png", dpi=dpi)
+    if fmt.lower() in {"jpeg", "jpg"}:
+        fig.savefig(
+            buf,
+            format="jpeg",
+            dpi=dpi,
+            pil_kwargs={"quality": jpeg_quality, "optimize": True, "progressive": True},
+        )
+    else:
+        fig.savefig(buf, format="png", dpi=dpi)
     plt.close(fig)
-    return optimize_png_bytes(buf.getvalue(), compression_level=PNG_COMPRESSION_LEVEL)
+    if fmt.lower() in {"jpeg", "jpg"}:
+        return buf.getvalue()
+    return optimize_png_bytes(
+        buf.getvalue(),
+        compression_level=PNG_COMPRESSION_LEVEL,
+        max_colors=PNG_MAX_COLORS,
+        quantize_threshold_bytes=PNG_QUANTIZE_THRESHOLD_BYTES,
+    )
 
 
 @st.cache_data
@@ -252,10 +315,14 @@ CHART_HEIGHT_IN = max(
 )
 INSIGHTS_CHART_WIDTH_IN = 12.0
 INSIGHTS_CHART_HEIGHT_IN = 6.0
-PDF_RENDER_WIDTH_IN = INSIGHTS_CHART_WIDTH_IN
-PDF_RENDER_HEIGHT_IN = INSIGHTS_CHART_HEIGHT_IN
-PDF_RENDER_DPI = 450
+PDF_RENDER_WIDTH_IN = CHART_WIDTH_IN
+PDF_RENDER_HEIGHT_IN = CHART_HEIGHT_IN
+PDF_RENDER_DPI = 200
+PDF_IMAGE_FORMAT = "jpeg"
+PDF_JPEG_QUALITY = 70
 PNG_COMPRESSION_LEVEL = 9
+PNG_MAX_COLORS = 64
+PNG_QUANTIZE_THRESHOLD_BYTES = 0
 PREVIEW_SCALE = 3.0
 
 layout_width_in = CHART_WIDTH_IN + (WORD_NARROW_MARGIN_IN * 2)
@@ -311,6 +378,30 @@ for item in location_items:
     if item["plot_df"].empty:
         continue
     item["caption"] = f"Figure 1-{figure_number}. {test_name} – {item['location']}"
+    item["fig"] = create_chart_figure(
+        item["plot_df"],
+        item["title"],
+        analyte_cols,
+        color_map,
+        bar_width,
+        INSIGHTS_CHART_WIDTH_IN,
+        INSIGHTS_CHART_HEIGHT_IN,
+    )
+    raw_img = fig_to_image_bytes(
+        item["fig"],
+        dpi=PDF_RENDER_DPI,
+        fmt=PDF_IMAGE_FORMAT,
+        jpeg_quality=PDF_JPEG_QUALITY,
+    )
+    if PDF_IMAGE_FORMAT.lower() in {"png"}:
+        item["png_bytes"] = optimize_png_bytes(
+            raw_img,
+            compression_level=PNG_COMPRESSION_LEVEL,
+            max_colors=PNG_MAX_COLORS,
+            quantize_threshold_bytes=PNG_QUANTIZE_THRESHOLD_BYTES,
+        )
+    else:
+        item["png_bytes"] = raw_img
     report_items.append(item)
     figure_number += 1
 
@@ -334,40 +425,35 @@ if report_items:
     caption_box_pt = CAPTION_BOX_IN * 72.0
     inter_gap_pt = INTER_CHART_GAP_IN * 72.0
 
-    top_chart_top = page_height_pt - margin_pt
-    top_chart_bottom = top_chart_top - chart_height_pt
-    top_caption_top = top_chart_bottom - caption_gap_pt
-    top_caption_bottom = top_caption_top - caption_box_pt
+    top_chart_top = margin_pt
+    top_chart_bottom = top_chart_top + chart_height_pt
+    top_caption_top = top_chart_bottom + caption_gap_pt
+    top_caption_bottom = top_caption_top + caption_box_pt
 
-    bottom_chart_top = top_caption_bottom - inter_gap_pt
-    bottom_chart_bottom = bottom_chart_top - chart_height_pt
-    bottom_caption_top = bottom_chart_bottom - caption_gap_pt
-    bottom_caption_bottom = bottom_caption_top - caption_box_pt
+    bottom_chart_top = top_caption_bottom + inter_gap_pt
+    bottom_chart_bottom = bottom_chart_top + chart_height_pt
+    bottom_caption_top = bottom_chart_bottom + caption_gap_pt
+    bottom_caption_bottom = bottom_caption_top + caption_box_pt
     pdf_doc = fitz.open()
     pdf_buffer = BytesIO()
 
     for i in range(0, len(report_items), 2):
         slots = report_items[i:i + 2]
         positions = [
-            (top_chart_bottom, top_caption_bottom, top_caption_top),
-            (bottom_chart_bottom, bottom_caption_bottom, bottom_caption_top),
+            (top_chart_top, top_chart_bottom, top_caption_top, top_caption_bottom),
+            (bottom_chart_top, bottom_chart_bottom, bottom_caption_top, bottom_caption_bottom),
         ]
 
         page = pdf_doc.new_page(width=page_width_pt, height=page_height_pt)
 
-        for item, (chart_y, caption_bottom, caption_top) in zip(slots, positions):
-            img_bytes = render_chart_png(
-                item["plot_df"],
-                item["title"],
-                analyte_cols,
-                color_map,
-                bar_width,
-                PDF_RENDER_WIDTH_IN,
-                PDF_RENDER_HEIGHT_IN,
-                dpi=PDF_RENDER_DPI,
-            )
-            img_arr = mpimg.imread(BytesIO(img_bytes))
-            img_h, img_w = img_arr.shape[:2]
+        for item, (chart_top, chart_bottom, caption_top, caption_bottom) in zip(slots, positions):
+            img_bytes = item["png_bytes"]
+            if Image is not None:
+                with Image.open(BytesIO(img_bytes)) as img:
+                    img_w, img_h = img.size
+            else:
+                img_arr = mpimg.imread(BytesIO(img_bytes))
+                img_h, img_w = img_arr.shape[:2]
             box_w = content_width_pt
             box_h = chart_height_pt
             img_ratio = img_w / img_h
@@ -379,14 +465,14 @@ if report_items:
                 draw_h = box_h
                 draw_w = box_h * img_ratio
             draw_x = margin_pt + (box_w - draw_w) / 2
-            draw_y = chart_y + (box_h - draw_h) / 2
+            draw_y = chart_top + (box_h - draw_h) / 2
             rect = fitz.Rect(draw_x, draw_y, draw_x + draw_w, draw_y + draw_h)
             page.insert_image(rect, stream=img_bytes, keep_proportion=False)
             caption_rect = fitz.Rect(
                 margin_pt,
-                caption_bottom,
-                margin_pt + content_width_pt,
                 caption_top,
+                margin_pt + content_width_pt,
+                caption_bottom,
             )
             page.insert_textbox(
                 caption_rect,
@@ -438,14 +524,5 @@ with insights_tab:
             st.warning("No data after filtering.")
             continue
 
-        fig, ax = plt.subplots(figsize=(INSIGHTS_CHART_WIDTH_IN, INSIGHTS_CHART_HEIGHT_IN))
-        plot_location_chart(
-            ax,
-            item["plot_df"],
-            item["title"],
-            analyte_cols,
-            color_map,
-            bar_width,
-            legend_outside=True,
-        )
-        st.pyplot(fig, width="stretch")
+        st.pyplot(item["fig"], width="stretch")
+        plt.close(item["fig"])
