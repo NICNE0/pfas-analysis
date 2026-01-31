@@ -6,4 +6,4 @@
 uv run streamlit run streamlit_app.py
 ```
 
-By default the app loads `files/clean_format.xlsx`. Use the sidebar to upload a different Excel file or tweak filters.
+Use the sidebar to upload your Excel file and tweak filters.
