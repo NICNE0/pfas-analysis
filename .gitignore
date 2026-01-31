@@ -1,4 +1,9 @@
-# Byte-compiled / optimized / DLL files
+# local files
+*.xlsx
+*.pdf
+
+# Byte-compiled 
+/ optimized / DLL files
 __pycache__/
 *.py[codz]
 *$py.class
