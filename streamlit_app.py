@@ -321,6 +321,7 @@ locations = pd.unique(df_valid["location"].dropna()).tolist()
 location_date_ranges = {}
 category_series = df_valid["category"].fillna("Unknown Category")
 category_order = pd.unique(category_series).tolist()
+category_number_map = {category: idx + 1 for idx, category in enumerate(category_order)}
 with date_range_container:
     for category in category_order:
         with st.expander(f"{category}", expanded=False):
@@ -421,7 +422,9 @@ for location in locations:
         location_test_name = "Multiple Categories"
     else:
         location_test_name = "Unknown Category"
-    location_category_key = str(location_categories[0]) if location_categories else "Unknown Category"
+    location_category_key = (
+        str(location_categories[0]) if location_categories else "Unknown Category"
+    )
     range_key = (location_category_key, location)
     start_date, end_date = location_date_ranges.get(range_key, (None, None))
     if start_date is not None and end_date is not None:
@@ -444,6 +447,7 @@ for location in locations:
         {
             "location": location,
             "test_name": location_test_name,
+            "category_key": location_category_key,
             "display_df": display_df,
             "plot_df": plot_df,
             "title": title,
@@ -452,11 +456,18 @@ for location in locations:
     )
 
 report_items = []
-figure_number = 1
+category_figure_counts = {category: 0 for category in category_number_map}
 for item in location_items:
     if item["plot_df"].empty:
         continue
-    item["caption"] = f"Figure 1-{figure_number}. {item['test_name']} – {item['location']}"
+    category_key = item.get("category_key", "Unknown Category")
+    category_number = category_number_map.get(category_key, len(category_number_map) + 1)
+    category_figure_counts.setdefault(category_key, 0)
+    category_figure_counts[category_key] += 1
+    figure_number = category_figure_counts[category_key]
+    item["caption"] = (
+        f"Figure {category_number}-{figure_number}. {item['test_name']} – {item['location']}"
+    )
     item["fig"] = create_chart_figure(
         item["plot_df"],
         item["title"],
