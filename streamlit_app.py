@@ -15,8 +15,10 @@ except Exception:  # Pillow is optional; fall back to raw PNG
 
 
 def clean_analyte_column(series: pd.Series) -> pd.Series:
-    series = series.astype("string").str.replace(" J", "", regex=False)
-    series = series.astype("string").str.replace("<", "", regex=False)
+    series = series.astype("string")
+    lt_mask = series.str.contains("<", na=False)
+    series = series.where(~lt_mask)
+    series = series.str.replace(" J", "", regex=False)
     return series
 
 
@@ -314,23 +316,21 @@ elif len(categories) > 1:
 else:
     report_test_name = "Unknown Category"
 
-locations = sorted(df_valid["location"].dropna().unique().tolist())
+locations = pd.unique(df_valid["location"].dropna()).tolist()
 
 location_date_ranges = {}
-category_locations = (
-    df_valid.assign(category=df_valid["category"].fillna("Unknown Category"))
-    .groupby("category")["location"]
-    .unique()
-    .to_dict()
-)
+category_series = df_valid["category"].fillna("Unknown Category")
+category_order = pd.unique(category_series).tolist()
 with date_range_container:
-    for category in sorted(category_locations.keys()):
+    for category in category_order:
         with st.expander(f"{category}", expanded=False):
-            for location in sorted(category_locations.get(category, [])):
+            for location in locations:
                 loc_df = df_valid[
                     (df_valid["location"] == location)
-                    & (df_valid["category"].fillna("Unknown Category") == category)
+                    & (category_series == category)
                 ]
+                if loc_df.empty:
+                    continue
                 loc_min = loc_df["sample_date"].min()
                 loc_max = loc_df["sample_date"].max()
                 if pd.isna(loc_min) or pd.isna(loc_max):
@@ -421,7 +421,8 @@ for location in locations:
         location_test_name = "Multiple Categories"
     else:
         location_test_name = "Unknown Category"
-    range_key = (location_test_name, location)
+    location_category_key = str(location_categories[0]) if location_categories else "Unknown Category"
+    range_key = (location_category_key, location)
     start_date, end_date = location_date_ranges.get(range_key, (None, None))
     if start_date is not None and end_date is not None:
         filtered = filtered[filtered["sample_date"].between(start_date, end_date)]
